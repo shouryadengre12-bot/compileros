@@ -4,7 +4,7 @@ import re
 import os
 
 API_KEY = os.environ["OPENROUTER_API_KEY"]
-MODEL = "openai/gpt-oss-20b:free"
+MODEL = "nvidia/nemotron-nano-9b-v2:free"
 
 def call_llm(prompt):
     response = requests.post(
