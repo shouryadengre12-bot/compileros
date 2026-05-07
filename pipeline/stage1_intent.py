@@ -4,7 +4,7 @@ import re
 import os
 
 API_KEY = os.environ["OPENROUTER_API_KEY"]
-MODEL = "nvidia/nemotron-nano-9b-v2:free"
+MODEL = "liquid/lfm-2.5-1.2b-instruct:free"
 
 def call_llm(prompt):
     response = requests.post(

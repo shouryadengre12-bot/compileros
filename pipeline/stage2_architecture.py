@@ -1,6 +1,6 @@
 import requests, json, re, os
 API_KEY = os.environ["OPENROUTER_API_KEY"]
-MODEL = "nvidia/nemotron-nano-9b-v2:free"
+MODEL = "liquid/lfm-2.5-1.2b-instruct:free"
 def call_llm(prompt):
     r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}, json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]})
     return r.json()["choices"][0]["message"]["content"]
