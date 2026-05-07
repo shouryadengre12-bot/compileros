@@ -12,7 +12,10 @@ def call_llm(prompt):
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
         json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]}
     )
-    return response.json()["choices"][0]["message"]["content"]
+    data = response.json()
+    if "choices" not in data:
+        raise Exception(f"API Error: {data}")
+    return data["choices"][0]["message"]["content"]
 
 INTENT_PROMPT = """Extract structured intent from this app description.
 
