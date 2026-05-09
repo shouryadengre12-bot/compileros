@@ -1,47 +1,33 @@
-import requests
 import json
-import re
 import os
-from json_repair import repair_json
-
-API_KEY = os.environ["OPENROUTER_API_KEY"]
-MODEL = "liquid/lfm-2.5-1.2b-instruct:free"
-
-def call_llm(prompt):
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={{"Authorization": f"Bearer {{API_KEY}}", "Content-Type": "application/json"}},
-        json={{"model": MODEL, "messages": [{{"role": "user", "content": prompt}}]}}
-    )
-    data = response.json()
-    if "choices" not in data:
-        raise Exception(f"API Error: {{data}}")
-    return data["choices"][0]["message"]["content"]
-
-def parse_json(text):
-    text = text.strip()
-    text = re.sub(r"^```json\s*", "", text)
-    text = re.sub(r"^```\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start != -1 and end > start:
-        text = text[start:end]
-    repaired = repair_json(text)
-    if isinstance(repaired, str):
-        result = json.loads(repaired)
-    else:
-        result = repaired
-    if not isinstance(result, dict):
-        raise ValueError(f"Expected dict, got {{type(result)}}")
-    return result
-
-PROMPT = """Design full system architecture for this app intent.
-Intent: {intent}
-Return ONLY valid JSON with keys: pages, api_endpoints, entities, auth_flows, business_rules"""
 
 def design_architecture(intent: dict) -> dict:
-    clean = {k: v for k, v in intent.items() if not k.startswith("_")}
-    result = parse_json(call_llm(PROMPT.format(intent=json.dumps(clean))))
+    if not isinstance(intent, dict):
+        intent = {}
+    entities = intent.get("entities", ["User", "Item"])
+    roles = intent.get("roles", ["admin", "user"])
+    features = intent.get("features", ["dashboard"])
+    auth = intent.get("auth_required", True)
+    payments = intent.get("payment_required", False)
+    pages = []
+    if auth:
+        pages.append({"name": "Login", "route": "/login", "components": ["login_form"], "roles_allowed": ["guest"], "description": "Login page"})
+    pages.append({"name": "Dashboard", "route": "/dashboard", "components": ["stats_cards", "chart"], "roles_allowed": roles, "description": "Main dashboard"})
+    for f in features:
+        if f not in ["login", "dashboard"]:
+            pages.append({"name": f.title(), "route": f"/{f}", "components": ["table", "form"], "roles_allowed": roles, "description": f"{f.title()} page"})
+    endpoints = []
+    for entity in entities:
+        base = f"/api/v1/{entity.lower()}s"
+        endpoints.append({"method": "GET", "path": base, "description": f"List {entity}s", "auth_required": auth, "roles_allowed": roles, "request_body": {}, "response": {}})
+        endpoints.append({"method": "POST", "path": base, "description": f"Create {entity}", "auth_required": auth, "roles_allowed": ["admin"], "request_body": {}, "response": {}})
+        endpoints.append({"method": "PUT", "path": f"{base}/{{id}}", "description": f"Update {entity}", "auth_required": auth, "roles_allowed": ["admin"], "request_body": {}, "response": {}})
+        endpoints.append({"method": "DELETE", "path": f"{base}/{{id}}", "description": f"Delete {entity}", "auth_required": auth, "roles_allowed": ["admin"], "request_body": {}, "response": {}})
+    if auth:
+        endpoints.append({"method": "POST", "path": "/api/v1/auth/login", "description": "Login", "auth_required": False, "roles_allowed": ["guest"], "request_body": {"email": "string", "password": "string"}, "response": {"token": "string"}})
+    if payments:
+        endpoints.append({"method": "POST", "path": "/api/v1/payments/checkout", "description": "Checkout", "auth_required": True, "roles_allowed": roles, "request_body": {"plan": "string"}, "response": {"url": "string"}})
+    entity_objs = [{"name": e, "description": f"{e} model", "fields": [{"name": "id", "type": "integer", "required": True}, {"name": "name", "type": "string", "required": True}, {"name": "created_at", "type": "datetime", "required": True}], "relations": []} for e in entities]
+    result = {"pages": pages, "api_endpoints": endpoints, "entities": entity_objs, "auth_flows": ["jwt"] if auth else [], "business_rules": ["Admins can create/update/delete", "Users have read-only access"]}
     result["_meta"] = {"stage": "architecture_design", "input_tokens": 0, "output_tokens": 0}
     return result

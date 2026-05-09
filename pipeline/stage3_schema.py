@@ -1,47 +1,38 @@
-import requests
-import json
 import re
 import os
-from json_repair import repair_json
-
-API_KEY = os.environ["OPENROUTER_API_KEY"]
-MODEL = "liquid/lfm-2.5-1.2b-instruct:free"
-
-def call_llm(prompt):
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={{"Authorization": f"Bearer {{API_KEY}}", "Content-Type": "application/json"}},
-        json={{"model": MODEL, "messages": [{{"role": "user", "content": prompt}}]}}
-    )
-    data = response.json()
-    if "choices" not in data:
-        raise Exception(f"API Error: {{data}}")
-    return data["choices"][0]["message"]["content"]
-
-def parse_json(text):
-    text = text.strip()
-    text = re.sub(r"^```json\s*", "", text)
-    text = re.sub(r"^```\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start != -1 and end > start:
-        text = text[start:end]
-    repaired = repair_json(text)
-    if isinstance(repaired, str):
-        result = json.loads(repaired)
-    else:
-        result = repaired
-    if not isinstance(result, dict):
-        raise ValueError(f"Expected dict, got {{type(result)}}")
-    return result
-
-PROMPT = """Generate complete app schema from this architecture.
-Architecture: {architecture}
-Return ONLY valid JSON with keys: ui_schema, api_schema, db_schema, auth_schema"""
 
 def generate_schema(architecture: dict) -> dict:
-    clean = {k: v for k, v in architecture.items() if not k.startswith("_")}
-    result = parse_json(call_llm(PROMPT.format(architecture=json.dumps(clean))))
+    if not isinstance(architecture, dict):
+        architecture = {}
+    pages = architecture.get("pages", [])
+    endpoints = architecture.get("api_endpoints", [])
+    entities = architecture.get("entities", [])
+    ui_pages = []
+    for i, p in enumerate(pages):
+        ep_path = next((ep["path"] for ep in endpoints if not "{" in ep.get("path","") and p.get("name","").lower().replace(" ","") in ep.get("path","").lower()), endpoints[0]["path"] if endpoints else "/api/v1/items")
+        ui_pages.append({"id": f"page_{i}", "name": p.get("name","Page"), "route": p.get("route","/"), "layout": "sidebar", "components": [{"id": f"comp_{i}", "type": "table", "label": p.get("name","Page"), "data_source": ep_path, "fields": [{"name": "id", "type": "integer", "label": "ID"}, {"name": "name", "type": "string", "label": "Name"}], "actions": [{"label": "Edit", "type": "edit", "endpoint": ep_path}]}], "roles_allowed": p.get("roles_allowed", ["admin"])})
+    api_eps = []
+    for i, ep in enumerate(endpoints):
+        path = ep.get("path", "/api/v1/items")
+        table = re.sub(r'\{.*?\}', '', path).strip("/").split("/")[-1] or "items"
+        api_eps.append({"id": f"ep_{i}", "method": ep.get("method","GET"), "path": path, "auth_required": ep.get("auth_required", True), "roles": ep.get("roles_allowed", ["admin"]), "request_schema": {}, "response_schema": {}, "db_table": table})
+    tables = []
+    for entity in entities:
+        cols = [{"name": "id", "type": "INT", "primary_key": True, "nullable": False, "unique": True, "foreign_key": None}, {"name": "created_at", "type": "TIMESTAMP", "primary_key": False, "nullable": True, "unique": False, "foreign_key": None}]
+        for f in entity.get("fields", []):
+            if f.get("name") not in ["id", "created_at"]:
+                cols.append({"name": f.get("name","col"), "type": "VARCHAR", "primary_key": False, "nullable": True, "unique": f.get("name") == "email", "foreign_key": None})
+        tables.append({"name": entity.get("name","Item").lower()+"s", "columns": cols, "indexes": [{"columns": ["id"], "unique": True}]})
+    all_roles = set()
+    for p in pages:
+        all_roles.update(p.get("roles_allowed", []))
+    if not all_roles:
+        all_roles = {"admin", "user"}
+    result = {
+        "ui_schema": {"pages": ui_pages},
+        "api_schema": {"base_url": "/api/v1", "endpoints": api_eps},
+        "db_schema": {"tables": tables},
+        "auth_schema": {"strategy": "JWT", "token_expiry": "24h", "roles": [{"name": r, "permissions": ["read", "write"] if r == "admin" else ["read"]} for r in all_roles], "protected_routes": [{"route": p.get("route","/"), "roles": p.get("roles_allowed",["admin"])} for p in pages if p.get("route") != "/login"]}
+    }
     result["_meta"] = {"stage": "schema_generation", "input_tokens": 0, "output_tokens": 0}
     return result
