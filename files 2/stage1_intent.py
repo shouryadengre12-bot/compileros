@@ -1,41 +1,67 @@
-import anthropic
+import requests
 import json
 import re
 import os
 
-client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+API_KEY = os.environ.get("OPENROUTER_API_KEY", "test")
+MODEL = "liquid/lfm-2.5-1.2b-instruct:free"
 
-INTENT_PROMPT = """You are a system architect. Extract structured intent from a user's app description.
+def call_llm(prompt):
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]}
+    )
+    data = response.json()
+    if "choices" not in data:
+        raise Exception(f"API Error: {data}")
+    return data["choices"][0]["message"]["content"]
 
-User Input: {user_input}
+def safe_parse(text):
+    if isinstance(text, dict):
+        return text
+    text = str(text).strip()
+    text = re.sub(r"^```json\s*", "", text)
+    text = re.sub(r"^```\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start != -1 and end > start:
+        text = text[start:end]
+    text = re.sub(r",\s*}", "}", text)
+    text = re.sub(r",\s*]", "]", text)
+    # Fix missing commas between } and " or { and "
+    text = re.sub(r'}\s*"', '}, "', text)
+    text = re.sub(r'"\s*{', '", {', text)
+    try:
+        return json.loads(text)
+    except Exception:
+        try:
+            import ast
+            return ast.literal_eval(text)
+        except Exception:
+            return {"_parse_error": True, "_raw": text[:200]}
 
-Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
+INTENT_PROMPT = """Extract app intent. Return ONLY JSON, no explanation.
+
+App description: {user_input}
+
+JSON format:
 {{
-  "app_name": "string",
-  "app_type": "string (e.g. CRM, E-commerce, SaaS, Blog)",
-  "entities": ["list of main data entities e.g. User, Product, Order"],
-  "features": ["list of features e.g. authentication, payments, dashboard"],
-  "roles": ["list of user roles e.g. admin, user, guest"],
+  "app_name": "CRM",
+  "app_type": "CRM",
+  "entities": ["User", "Contact"],
+  "features": ["login", "contacts"],
+  "roles": ["admin", "user"],
   "auth_required": true,
   "payment_required": false,
-  "ambiguities": ["list of unclear or missing requirements"],
-  "assumptions": ["list of assumptions made to fill gaps"]
+  "ambiguities": [],
+  "assumptions": []
 }}"""
 
 def extract_intent(user_input: str) -> dict:
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": INTENT_PROMPT.format(user_input=user_input)}]
-    )
-    text = response.content[0].text.strip()
-    text = re.sub(r'^```json\s*', '', text)
-    text = re.sub(r'^```\s*', '', text)
-    text = re.sub(r'\s*```$', '', text)
-    result = json.loads(text)
-    result["_meta"] = {
-        "stage": "intent_extraction",
-        "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens
-    }
+    result = safe_parse(call_llm(INTENT_PROMPT.format(user_input=user_input)))
+    if not isinstance(result, dict):
+        result = {"app_name": "App", "app_type": "Web App", "entities": [], "features": [], "roles": ["admin", "user"], "auth_required": True, "payment_required": False, "ambiguities": [], "assumptions": []}
+    result["_meta"] = {"stage": "intent_extraction", "input_tokens": 0, "output_tokens": 0}
     return result

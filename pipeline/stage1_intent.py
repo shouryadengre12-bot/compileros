@@ -1,46 +1,53 @@
-import requests
-import json
 import re
 import os
-from json_repair import repair_json
-
-API_KEY = os.environ["OPENROUTER_API_KEY"]
-MODEL = "liquid/lfm-2.5-1.2b-instruct:free"
-
-def call_llm(prompt):
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={{"Authorization": f"Bearer {{API_KEY}}", "Content-Type": "application/json"}},
-        json={{"model": MODEL, "messages": [{{"role": "user", "content": prompt}}]}}
-    )
-    data = response.json()
-    if "choices" not in data:
-        raise Exception(f"API Error: {{data}}")
-    return data["choices"][0]["message"]["content"]
-
-def parse_json(text):
-    text = text.strip()
-    text = re.sub(r"^```json\s*", "", text)
-    text = re.sub(r"^```\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start != -1 and end > start:
-        text = text[start:end]
-    repaired = repair_json(text)
-    if isinstance(repaired, str):
-        result = json.loads(repaired)
-    else:
-        result = repaired
-    if not isinstance(result, dict):
-        raise ValueError(f"Expected dict, got {{type(result)}}")
-    return result
-
-PROMPT = """Extract structured intent from this app description.
-Input: {user_input}
-Return ONLY valid JSON with keys: app_name, app_type, entities, features, roles, auth_required, payment_required, ambiguities, assumptions"""
 
 def extract_intent(user_input: str) -> dict:
-    result = parse_json(call_llm(PROMPT.format(user_input=user_input)))
+    words = user_input.lower()
+    entities = []
+    for kw, entity in [("user", "User"), ("contact", "Contact"), ("product", "Product"),
+                        ("order", "Order"), ("invoice", "Invoice"), ("task", "Task"),
+                        ("project", "Project"), ("employee", "Employee"), ("customer", "Customer"),
+                        ("patient", "Patient"), ("doctor", "Doctor"), ("student", "Student")]:
+        if kw in words:
+            entities.append(entity)
+    if not entities:
+        entities = ["User", "Item"]
+
+    roles = ["admin", "user"]
+    for kw, role in [("sales", "sales_rep"), ("manager", "manager"),
+                     ("doctor", "doctor"), ("patient", "patient"), ("agent", "agent"),
+                     ("teacher", "teacher"), ("student", "student")]:
+        if kw in words:
+            roles.append(role)
+
+    features = []
+    for f in ["login", "dashboard", "payments", "analytics", "contacts",
+              "reports", "notifications", "search", "chat", "calendar", "billing"]:
+        if f in words:
+            features.append(f)
+    if not features:
+        features = ["login", "dashboard"]
+
+    app_type = "Web Application"
+    for kw, t in [("crm", "CRM"), ("ecommerce", "E-commerce"), ("store", "E-commerce"),
+                  ("shop", "E-commerce"), ("blog", "Blog"), ("lms", "LMS"),
+                  ("course", "LMS"), ("hr", "HR Management"), ("clinic", "Healthcare")]:
+        if kw in words:
+            app_type = t
+            break
+
+    app_name = user_input.split()[0].title() if user_input.split() else "App"
+
+    result = {
+        "app_name": app_name,
+        "app_type": app_type,
+        "entities": entities,
+        "features": features,
+        "roles": roles,
+        "auth_required": any(w in words for w in ["login", "auth", "sign", "register", "password"]),
+        "payment_required": any(w in words for w in ["payment", "stripe", "pay", "billing", "subscription"]),
+        "ambiguities": [],
+        "assumptions": ["Entities and features inferred from description keywords"]
+    }
     result["_meta"] = {"stage": "intent_extraction", "input_tokens": 0, "output_tokens": 0}
     return result

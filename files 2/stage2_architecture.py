@@ -1,64 +1,69 @@
-import anthropic
+import requests
 import json
 import re
 import os
 
-client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+API_KEY = os.environ.get("OPENROUTER_API_KEY", "test")
+MODEL = "liquid/lfm-2.5-1.2b-instruct:free"
 
-ARCHITECTURE_PROMPT = """You are a senior software architect. Given this extracted app intent, design the full system architecture.
+def call_llm(prompt):
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]}
+    )
+    data = response.json()
+    if "choices" not in data:
+        raise Exception(f"API Error: {data}")
+    return data["choices"][0]["message"]["content"]
 
-Intent:
-{intent}
+def safe_parse(text):
+    if isinstance(text, dict):
+        return text
+    text = str(text).strip()
+    text = re.sub(r"^```json\s*", "", text)
+    text = re.sub(r"^```\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start != -1 and end > start:
+        text = text[start:end]
+    text = re.sub(r",\s*}", "}", text)
+    text = re.sub(r",\s*]", "]", text)
+    try:
+        return json.loads(text)
+    except Exception:
+        return {"_parse_error": True}
 
-Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
+ARCHITECTURE_PROMPT = """Design system architecture. Return ONLY JSON, no explanation.
+
+Intent: {intent}
+
+JSON format:
 {{
   "pages": [
-    {{
-      "name": "string",
-      "route": "string",
-      "components": ["list of UI components on this page"],
-      "roles_allowed": ["roles that can access this page"],
-      "description": "string"
-    }}
+    {{"name": "Dashboard", "route": "/dashboard", "components": ["chart", "table"], "roles_allowed": ["admin"], "description": "Main dashboard"}}
   ],
   "api_endpoints": [
-    {{
-      "method": "GET|POST|PUT|DELETE",
-      "path": "string e.g. /api/users",
-      "description": "string",
-      "auth_required": true,
-      "roles_allowed": ["list of roles"],
-      "request_body": {{"field": "type"}},
-      "response": {{"field": "type"}}
-    }}
+    {{"method": "GET", "path": "/api/v1/items", "description": "Get items", "auth_required": true, "roles_allowed": ["admin"], "request_body": {{}}, "response": {{"items": "array"}}}}
   ],
   "entities": [
-    {{
-      "name": "string",
-      "description": "string",
-      "fields": [{{"name": "string", "type": "string", "required": true}}],
-      "relations": [{{"type": "has_many|belongs_to|many_to_many", "entity": "string"}}]
-    }}
+    {{"name": "User", "description": "App user", "fields": [{{"name": "id", "type": "int", "required": true}}], "relations": []}}
   ],
-  "auth_flows": ["list of auth flows"],
-  "business_rules": ["list of business logic rules"]
+  "auth_flows": ["email_password", "jwt_token"],
+  "business_rules": ["Admins can access all data"]
 }}"""
 
 def design_architecture(intent: dict) -> dict:
-    clean_intent = {k: v for k, v in intent.items() if not k.startswith("_")}
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": ARCHITECTURE_PROMPT.format(intent=json.dumps(clean_intent, indent=2))}]
-    )
-    text = response.content[0].text.strip()
-    text = re.sub(r'^```json\s*', '', text)
-    text = re.sub(r'^```\s*', '', text)
-    text = re.sub(r'\s*```$', '', text)
-    result = json.loads(text)
-    result["_meta"] = {
-        "stage": "architecture_design",
-        "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens
-    }
+    clean = {k: v for k, v in intent.items() if not k.startswith("_")}
+    result = safe_parse(call_llm(ARCHITECTURE_PROMPT.format(intent=json.dumps(clean))))
+    if not isinstance(result, dict) or result.get("_parse_error"):
+        result = {
+            "pages": [{"name": "Dashboard", "route": "/dashboard", "components": ["table"], "roles_allowed": ["admin"], "description": "Main page"}],
+            "api_endpoints": [{"method": "GET", "path": "/api/v1/items", "description": "Get items", "auth_required": True, "roles_allowed": ["admin"], "request_body": {}, "response": {}}],
+            "entities": [{"name": "User", "description": "App user", "fields": [{"name": "id", "type": "int", "required": True}], "relations": []}],
+            "auth_flows": ["email_password"],
+            "business_rules": []
+        }
+    result["_meta"] = {"stage": "architecture_design", "input_tokens": 0, "output_tokens": 0}
     return result
